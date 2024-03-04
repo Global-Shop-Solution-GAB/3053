@@ -1,0 +1,158 @@
+Program.Sub.Preflight.Start
+
+Variable.UDT.uGLDetail.Define("GL_Account",String)
+Variable.UDT.uGLDetail.Define("Trns_Batch_No",String)
+Variable.UDT.uGLDetail.Define("Amount",Float)
+Variable.UDT.uGLDetail.Define("Post_Date",String)
+Variable.uGlobal.uGLDetail.Declare("uGLDetail")
+
+Variable.Global.sUploadText.Declare(String)
+
+Program.Sub.Preflight.End
+
+Program.Sub.Clear_uGLDetail.Start
+'sub that will clear out the uGLDetail udt
+V.uGlobal.uGLDetail.Redim(-1,-1)
+
+Program.Sub.Clear_uGLDetail.End
+
+Program.Sub.GLDetailAddRecord.Start
+'Add records to the uGLDetail Udt
+
+'Passed argument required
+'GL_Account
+'Post_Date
+'Trns_Batch_No
+'Amount
+
+
+V.Local.iUB.Declare(Long)
+
+F.Intrinsic.Math.Add(V.uGlobal.uGLDetail.UBound,1,V.Local.iUB)
+F.Intrinsic.Control.If(V.Local.iUB,=,0)
+	V.uGlobal.uGLDetail.Redim(0,0)
+F.Intrinsic.Control.Else
+	V.uGlobal.uGLDetail.RedimPreserve(0,V.Local.iUB)
+F.Intrinsic.Control.Endif
+
+
+'set udt values
+V.uGlobal.uGLDetail(v.Local.iUB)!GL_Account.Set(V.Args.GL_Account.Trim)
+V.uGlobal.uGLDetail(v.Local.iUB)!Post_Date.Set(V.Args.Post_Date)
+V.uGlobal.uGLDetail(v.Local.iUB)!Trns_Batch_No.Set(V.Args.Trns_Batch_No.Trim)
+V.uGlobal.uGLDetail(v.Local.iUB)!Amount.Set(V.Args.Amount)
+
+
+
+Program.Sub.GLDetailAddRecord.End
+
+Program.Sub.GLDetailCreate.Start
+F.Intrinsic.Control.SetErrorHandler("GLDetailCreate_Err")
+F.Intrinsic.Control.ClearErrors
+
+
+'subroutine that will create the necessary file for the
+'format of the GL Detail
+
+'Only required elements are being written to the file
+'the remaining information will be padded.
+
+'Required Elements:
+'GL Account  15 Spaces
+'Post Date : 8 Spaces  Format: CCYYMMDD
+'Transaction Batch Number: 5 Spaces
+'Amount: 16 Spaces   Format: +-15.2 if negative(leading dash) will be considered a credit)
+V.Local.sError.Declare(String)
+V.Local.sUploadText.Declare(String)
+V.Local.sTemp.Declare(String)
+V.Local.sFile.Declare(String)
+V.Local.bExists.Declare(Boolean)
+V.Local.iC.Declare(Long,0)
+V.Local.sArchFile.Declare(String)
+
+'File will be stored in Global\Files directory
+'Name will be GLDETAIL.TXT
+F.Intrinsic.String.Concat(V.Caller.FilesDir,"\GLDETAIL.TXT",V.Local.sFile)
+
+'first check and see if a GLDetail.TXT file already exists in the Global\Files directory, if it does delete it.
+F.Intrinsic.File.Exists(V.Local.sFile,V.local.bExists)
+F.Intrinsic.Control.If(V.local.bExists,=,True)
+	'check if the file is locked before deleting
+	F.Intrinsic.File.IsFileLocked(V.local.sFile,V.Local.bExists)
+	F.Intrinsic.Control.If(V.Local.bExists,=,True)
+		F.Intrinsic.UI.Msgbox("GLDetail.TXT file cannot be deleted.","File Locked")
+		F.Intrinsic.Variable.AddRV("FileLocked",V.Local.bExists)
+		F.Intrinsic.Control.ExitSub
+	F.Intrinsic.Control.EndIf
+	'delete the file
+	F.Intrinsic.File.DeleteFile(V.Local.sFile)
+F.Intrinsic.Control.EndIf
+
+'now we can perform the format of text and be good.
+F.Intrinsic.Control.DoUntil(V.Local.iC,>,V.uGlobal.uGLDetail.UBound)
+	V.Local.sTemp.Set("")
+	'Gl Account Number
+	F.Intrinsic.String.RPad(V.uGlobal.uGLDetail(v.Local.iC)!GL_Account," ",15,V.Local.sTemp)
+	F.Intrinsic.String.Concat(V.Local.sUploadText,V.Local.sTemp,V.Local.sUploadText)
+'	F.Intrinsic.Control.If(V.Local.sUploadText.Trim,<>,"")
+'		F.Intrinsic.String.Concat(V.Ambient.NewLine,V.Local.sTemp,V.Local.sUploadText)
+'	F.Intrinsic.Control.Else
+'		V.Local.sUploadText.Set(V.Local.sTemp)
+'	F.Intrinsic.Control.EndIf
+
+	V.Local.sTemp.Set("")
+	'Post Date
+'	F.Intrinsic.String.Format(V.uGlobal.uGLDetail(v.Local.iC)!Post_Date,"YYYYMMDD",V.Local.sTemp)
+	F.Intrinsic.String.RPad(V.uglobal.uGLDetail(v.Local.iC)!Post_Date," ",8,V.Local.sTemp)
+	F.Intrinsic.String.Concat(V.Local.sUploadText,V.Local.sTemp,V.Local.sUploadText)
+
+	V.Local.sTemp.Set("")
+	'Transaction Batch Number
+	F.Intrinsic.String.RPad(V.uGlobal.uGLDetail(v.Local.iC)!Trns_Batch_No," ",5,V.Local.sTemp)
+	F.Intrinsic.String.Concat(V.Local.sUploadText,V.Local.sTemp,V.Local.sUploadText)
+	
+	V.Local.sTemp.Set("")
+	'Filler for Transaction Batch Line 5 Spaces, voucher number 7 spaces, and reference of 15 spaces. Total 27 Spaces
+
+	F.Intrinsic.String.RPad(V.Local.sTemp," ",27,V.Local.sTemp)
+	F.Intrinsic.String.Concat(V.Local.sUploadText,V.Local.sTemp,V.Local.sUploadText)
+		
+	V.Local.sTemp.Set("")
+	'should be able to just pad it.
+	F.Intrinsic.String.RPad(V.uGlobal.uGLDetail(v.Local.iC)!Amount," ",16,V.Local.sTemp)
+	F.Intrinsic.String.Concat(V.Local.sUploadText,V.Local.sTemp,V.Local.sUploadText)
+	
+	V.Local.sTemp.Set("")
+	'filler to eof
+	F.Intrinsic.String.RPad(V.Local.sTemp," ",145,V.Local.sTemp)
+	F.Intrinsic.String.Concat(V.Local.sUploadText,V.Local.sTemp,V.Local.sUploadText)
+	V.Local.sTemp.Set("")
+
+	F.Intrinsic.String.Concat(V.Local.sUploadText,V.Ambient.NewLine,V.Local.sUploadText)
+
+	F.Intrinsic.Math.Add(V.Local.iC,1,V.local.ic)
+F.Intrinsic.Control.Loop
+
+'once done
+F.Intrinsic.Control.If(V.Local.sUploadText.Trim,=,"")
+	F.Intrinsic.UI.Msgbox("Information for Upload not found","Error")
+F.Intrinsic.Control.Else
+	V.Global.sUploadText.Set(V.Local.sUploadText)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("GLDetailCreate_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GL_Detail_Upl.lib",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.End
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.GLDetailCreate.End
+
+Program.Sub.Comments.Start
+${$0$}$GL_Detail.$}$TRT$}$8/9/2013
+Program.Sub.Comments.End
+
