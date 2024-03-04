@@ -1,0 +1,416 @@
+Program.Sub.ScreenSU.Start
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+
+Program.External.Include.Library("GL_Detail_Upl.lib")
+Variable.Global.sBatchNo.Declare(String)
+Variable.Global.sDir.Declare(String)
+Variable.Global.sFileType.Declare(String)
+Variable.Global.sXLSFile.Declare(String)
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'coded by TRT
+'quote 4880
+'8-7-2013
+
+'Interface:
+'GSS will create a front end that would allow a browser to select a XLS sheet for Siemens to select.
+'
+'GSS will pull in the following items:
+'Posting Date: cell B7 - MM/DD/YYYY format required
+'Mozard GL Account: cell B16 to EOF
+'Amount: cell D16 to EOF
+'
+'Mozard GL Account will be cross referenced to GSS_SAP_Acct_Map to find the GSS GL Account.
+'A Batch number will be created and stored so that GSS can pull in a new each time the upload is run.
+'
+'Final output will follow our standard GL Upload txt file. The file (GLDETAIL.txt) will be created and stored to be uploaded into GSS.
+'Batch numbers are reusable so long as they are not on the same date. This will allow us to roll the M9999 batch back to M0001 without issue.
+'
+'GL Account: Must be a valid GL Account in GSS, spaces 1-15, field size 15
+'Post Date: CCYYMMDD, spaces 16-23, field size 8
+'Trans Batch No: M0001 (numeric seq), spaces 24-28, field size 5
+'Amount: (+- 15.2), spaces 56-71, field size 16
+'
+'The file generated will be saved in a new directory as GLDETAIL(timestamp).txt. GSS will also save this into the Global / Files directory as GLDETAIL.txt (Overwriting the previous upload).
+'Service Guide will run the upload direct from within the GSS software via 1-shot (the append method should be selected at each run) - UPLGDETL
+
+F.ODBC.Connection!conX.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+F.Intrinsic.Control.CallSub(Fileopen)
+F.Intrinsic.UI.InvokeWaitDialog("Reading spreadsheet...")
+F.Intrinsic.Control.CallSub(Readfile)
+F.Intrinsic.UI.ChangeWaitStatus("Building GL Detail files...")
+'lib file subroutine
+F.Intrinsic.Control.CallSub(Gldetailcreate)
+F.Intrinsic.UI.ChangeWaitStatus("Saving files...")
+F.Intrinsic.Control.CallSub(Glfilecreate)
+F.Intrinsic.ui.Sleep(1)
+F.Intrinsic.Control.CallSub(Unload)
+
+
+
+Program.Sub.Main.End
+
+Program.Sub.FileOpen.Start
+F.Intrinsic.Control.SetErrorHandler("FileOpen_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+'sub that will fire and show the open file dialog
+'make sure table exists first
+'GSS_SAP_Acct_Map
+
+V.Local.bExists.Declare(Boolean)
+V.Local.sFile.Declare(String)
+V.Local.bXLS.Declare(Boolean)
+V.Local.bOOCalc.Declare(Boolean)
+V.Local.sFileType.Declare(String)
+
+F.ODBC.Connection!conX.TableExists("GSS_SAP_Acct_Map",V.Local.bExists)
+F.Intrinsic.Control.If(V.Local.bExists,=,False)
+	F.Intrinsic.Control.CallSub(Unload)
+F.Intrinsic.Control.EndIf
+
+'also check and make sure excel is on the machine
+F.Automation.MSExcel.CheckPresence(V.Local.bXLS)
+F.Automation.OOGeneral.CheckPresence(V.Local.bOOCalc)
+F.Intrinsic.Control.If(V.Local.bXLS,=,True)
+	V.global.sFileType.Set("XLS")
+F.Intrinsic.Control.ElseIf(V.Local.bOOCalc,=,True)
+	V.global.sFileType.Set("OOCALC")
+F.Intrinsic.Control.Else(V.Local.bExists,=,False)
+	F.Intrinsic.UI.Msgbox("Micsoft Excel or Open Office not found.","Program Missing")
+	F.Intrinsic.Control.CallSub(Unload)
+F.Intrinsic.Control.EndIf
+
+'if all is good lets show open file dialog.
+F.Intrinsic.UI.ShowOpenFileDialog("","*.xls",V.Caller.FilesDir,V.Local.sFile)
+F.Intrinsic.Control.If(V.Local.sFile,=,"***CANCEL***")
+	F.Intrinsic.Control.CallSub(Unload)
+F.Intrinsic.Control.Else
+	V.Global.sXLSFile.Set(V.Local.sFile)
+F.Intrinsic.Control.EndIf
+
+'make sure that is is saved as a .xls file
+F.Intrinsic.File.GetExtensionComponent(v.Global.sXLSFile,v.Local.sFile)
+F.Intrinsic.String.UCase(V.Local.sFile,V.Local.sFile)
+F.Intrinsic.Control.If(V.Local.sFile.Trim,<>,"XLS")
+	F.Intrinsic.Control.If(V.Local.sFile.Trim,<>,"XLSX")
+		F.Intrinsic.UI.Msgbox("File type must be saved as a .xls or .xlsx extension","File Type Error")
+			F.Intrinsic.Control.CallSub(Unload)
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.EndIf
+
+
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("FileOpen_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_SAP_GL_Upload.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.FileOpen.End
+
+Program.Sub.Unload.Start
+F.Intrinsic.UI.CloseWaitDialog
+F.ODBC.Connection!conX.Close
+F.Intrinsic.Control.End
+
+
+Program.Sub.Unload.End
+
+Program.Sub.ReadFile.Start
+F.Intrinsic.Control.SetErrorHandler("ReadFile_Err")
+F.Intrinsic.Control.ClearErrors
+
+
+'sub that will read whatever file we need to read
+'ARGS from File Open
+' File will store the contents of the spreadshet
+'File Type will give us a string of XLS or OOCALC
+
+'Spreadsheet Columns Needed
+'B7 will contain the POsting Date MM/DD/YYYY
+'B16 to EOF - Mozard GL Account
+'D16 to EOF - Amount values
+
+V.Local.bIsDate.Declare(Boolean)
+V.Local.sError.Declare(String)
+V.Local.sFile.Declare(String)
+V.Local.sRow.Declare(String)
+V.Local.sSheet.Declare(String)
+V.Local.sCol.Declare(String)
+V.Local.iRow.Declare(Long)
+V.Local.iSheet.Declare(Long)
+V.Local.sPostDate.Declare(String)
+V.Local.sMAccount.Declare(String)
+V.Local.sGSSAccount.Declare(String)
+V.Local.fAmount.Declare(Float)
+V.Local.sQuery.Declare(String)
+V.Local.bIssue.Declare(Boolean)
+V.Local.sErrorText.Declare(String)
+
+F.Intrinsic.Control.If(V.global.sFileType,=,"XLS")
+	'read for excel
+	F.Automation.MSExcel.ReadSpreadsheet(V.Global.sXLSFile,V.Local.sfile)
+F.Intrinsic.Control.ElseIf(V.Global.sFileType,=,"OOCALC")
+	'read for open office
+	F.Automation.OOCalc.ReadSpreadsheet(V.Global.sXLSFile,True,V.Local.sFile)
+F.Intrinsic.Control.Else
+	'file type not determined.
+	F.Intrinsic.UI.Msgbox("Microsoft Excel or Open Office equivalent must be installed.","Software Missing")
+	F.Intrinsic.Control.CallSub(Unload)
+F.Intrinsic.Control.EndIf
+
+'first get the Batch number necessary
+F.Intrinsic.Control.CallSub(Getbatchno)
+
+
+F.Intrinsic.String.Concat("Accounts missing corresponding GSS GL Account Numbers",V.Ambient.NewLine,V.Local.sErrorText)
+F.Intrinsic.String.Rpad(V.Local.sRow,"-",58,V.Local.srow)
+F.Intrinsic.String.Concat(V.Local.serrortext,V.Local.sRow,V.Ambient.NewLine,V.Local.sErrorText)
+
+'clear out any records within our udt
+F.Intrinsic.Control.CallSub(Clear_ugldetail)
+
+
+F.Intrinsic.String.Split(V.Local.sFile,"&^&",V.Local.sSheet)
+'loop through sheets count of iSheet
+F.Intrinsic.Control.DoUntil(V.Local.iSheet,>,V.Local.sSheet.UBound)
+	'split each sheet up into rows
+	F.Intrinsic.String.Split(V.Local.sSheet,"$!$",V.Local.sRow)
+	'loop through each row value returned. count of iRow
+	F.Intrinsic.Control.DoUntil(V.Local.iRow,>,V.Local.sRow.UBound)
+		'split each row into sCol values count of iCol
+		F.Intrinsic.String.Split(V.Local.sRow(v.Local.iRow),"*!*",V.Local.sCol)
+		F.Intrinsic.Control.If(V.Local.iRow,=,6)
+			'first make sure its a valid date
+			F.Intrinsic.Date.IsDate(V.Local.sCol(1),V.Local.bIsDate)
+			F.Intrinsic.Control.If(V.Local.bIsDate,=,True)
+				'Posting Date will be in field B7
+				V.Local.sPostDate.Set(V.Local.sCol(1))
+				'format post date to CCYYMMDD
+				F.Intrinsic.String.Format(V.Local.sPostDate,"YYYYMMDD",V.Local.sPostDate)
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.Concat("Posting Date: ",V.Local.sCol(1)," is not a valid date in format MM/DD/YYYY",V.Local.sErrorText)
+				F.Intrinsic.UI.Msgbox(V.Local.sErrorText,"Date Type Mismatch")
+				F.Intrinsic.Control.CallSub(Unload)
+			F.Intrinsic.Control.EndIf
+		F.Intrinsic.Control.EndIf
+		F.Intrinsic.Control.If(V.Local.iRow,>=,15)
+			'here we are on the GL Account column B, and Amount as column D
+			V.Local.sMAccount.Set(V.Local.sCol(1))
+			V.Local.fAmount.Set(V.Local.sCol(3))
+			'Query the GSS_SAP_ACCT_MAP for the GSS GL Account, field GSS_GL_Acct, mozard account is SPI_GL_Acct
+			F.Intrinsic.String.Concat("Select GSS_GL_Acct From GSS_SAP_ACCT_MAP Where MOZ_GL_ACCT = '",V.Local.sMAccount.Trim,"'",V.Local.sQuery)
+			F.ODBC.Connection!conX.OpenLocalRecordsetRO("rst",V.local.squery)
+			F.Intrinsic.Control.If(V.ODBC.conX!rst.EOF,<>,True)
+				V.Local.sGSSAccount.Set(V.ODBC.conX!rst.FieldValTrim!GSS_GL_Acct)
+			F.Intrinsic.Control.Else
+				V.Local.bIssue.Set(True)
+				F.Intrinsic.String.RPad(V.Local.sMAccount," ",15,V.Local.sMAccount)
+				F.Intrinsic.String.Concat(V.local.sErrorText,"Account #: ",V.Local.sMAccount,V.Ambient.Tab,V.Ambient.Tab,"Amount: $",V.Local.fAmount,V.ambient.newline,V.Local.sErrorText)
+			F.Intrinsic.Control.EndIf
+			F.ODBC.conX!rst.Close
+			'call the GlDetailAddRecord sub for the udt
+			F.Intrinsic.Control.CallSub(Gldetailaddrecord,"Gl_Account",V.Local.sGSSAccount,"Post_Date",V.Local.sPostDate,"Trns_Batch_No",V.global.sBatchNo,"Amount",V.Local.fAmount)
+		F.Intrinsic.Control.EndIf
+		F.Intrinsic.Math.Add(V.Local.iRow,1,V.Local.iRow)
+	F.Intrinsic.Control.Loop
+	F.Intrinsic.Math.Add(V.Local.iSheet,1,V.Local.iSheet)
+F.Intrinsic.Control.Loop
+
+'if we come across some issues we are not going to process the bach, and open up a text file saying why.
+F.Intrinsic.Control.If(V.Local.bIssue,=,True)
+	F.Intrinsic.Control.CallSub(Accountlog,"ErrorText",V.Local.sErrorText)
+F.Intrinsic.Control.EndIf
+
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("ReadFile_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_SAP_GL_Upload.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.ReadFile.End
+
+Program.Sub.GetBatchNo.Start
+F.Intrinsic.Control.SetErrorHandler("GetBatchNo_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+'Sub that will read for the batch number storage file found in the Global\Files\GL_Load
+
+'if file doesn't exist or directory create it
+
+V.Local.bExists.Declare(Boolean)
+V.Local.sDir.Declare(String)
+V.Local.sFile.Declare(String)
+'V.Local.iBatchNum.Declare(Long)
+V.Local.sText.Declare(String)
+
+
+F.Intrinsic.String.Concat(V.Caller.FilesDir,"\GL_LOAD",V.Local.sDir)
+F.Intrinsic.File.DirExists(V.Local.sDir,V.Local.bExists)
+F.Intrinsic.Control.If(V.Local.bExists,=,False)
+	F.Intrinsic.File.CreateDir(V.Local.sDir)
+F.Intrinsic.Control.EndIf
+
+V.Global.sDir.Set(V.Local.sDir)
+
+'now check for the Batch Num file
+F.Intrinsic.String.Concat(V.Local.sDir,"\MBATCHNUM",V.Local.sFile)
+
+
+'does the file exist?
+F.Intrinsic.File.Exists(V.Local.sFile,V.Local.bExists)
+F.Intrinsic.Control.If(V.Local.bExists,=,False)
+	'we know that the file has either been deleted or not there, so batch will be M0001
+	V.global.sBatchNo.Set("M0001")
+	F.Intrinsic.File.String2File(V.Local.sFile,V.Global.sBatchNo)
+F.Intrinsic.Control.Else
+	'is that file locked
+	F.Intrinsic.File.IsFileLocked(V.Local.sFile,V.Local.bExists)
+	F.Intrinsic.Control.If(V.Local.bExists,=,True)
+		'meaning that the file is locked from something, give error and do not continue
+		F.Intrinsic.String.Concat("File: ",V.Local.sFile,"is locked. Please close the open file.",V.Local.sText)
+		F.Intrinsic.UI.Msgbox(V.Local.sText,"Error in Batch File")
+		F.Intrinsic.Control.CallSub(Unload)
+	F.Intrinsic.Control.EndIf
+	'file already exists so lets read the file to get the batch number
+	F.Intrinsic.File.File2String(V.Local.sFile,V.global.sBatchNo)
+	'get the last four digits from the file
+	F.Intrinsic.String.Right(V.Global.sBatchNo.Trim,4,V.Global.sBatchNo)
+	F.Intrinsic.Control.If(V.global.sBatchNo,>=,9999)
+'		V.Local.iBatchNum.Set(0001)
+		V.Global.sBatchNo.Set(0001)
+		'we can roll back at this point
+	F.Intrinsic.Control.Else
+'		F.Intrinsic.Math.Add(V.Local.iBatchNum,1,V.Local.iBatchNum)
+		F.Intrinsic.Math.Add(V.Global.sBatchNo.Long,1,V.Global.sBatchNo.Long)
+'		F.Intrinsic.String.Format(V.Local.iBatchNum.String,"0000",V.Global.sBatchNo)	
+		F.Intrinsic.String.Format(V.Global.sBatchNo,"0000",V.Global.sBatchNo)
+	F.Intrinsic.Control.EndIf
+	'write it back to the file
+	F.Intrinsic.String.Concat("M",V.global.sBatchNo,V.Global.sBatchNo)
+	F.Intrinsic.File.String2File(V.Local.sFile,V.Global.sBatchNo)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("GetBatchNo_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_SAP_GL_Upload.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.GetBatchNo.End
+
+Program.Sub.GLFileCreate.Start
+F.Intrinsic.Control.SetErrorHandler("GLFileCreate_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+'sub that will copy the GLDetail.TXT file to
+'the storage directory in GLobal\Files\GL_LOAD : v.global.sDir value
+V.Local.sMessage.Declare(String)
+V.Local.sFile.Declare(String)
+V.Local.sfilename.Declare(String)
+V.Local.bExists.Declare(Boolean)
+V.Local.sCopyFile.Declare(String)
+
+F.Intrinsic.Control.If(V.Global.sUploadText.Trim,=,"")
+	F.Intrinsic.UI.Msgbox("Information was not read from spreadsheet. Please try again.","Error in Read")
+	F.Intrinsic.Control.CallSub(Unload)
+F.Intrinsic.Control.EndIf
+
+'first let's save the regular GLDETAIL.TXT to our GLobal\FIles directory
+F.Intrinsic.String.Concat(V.Caller.FilesDir,"\GLDETAIL.TXT",V.Local.sFile)
+F.Intrinsic.File.Exists(V.Local.sFile,V.Local.bExists)
+F.Intrinsic.Control.If(V.Local.bExists,=,True)
+	F.Intrinsic.File.DeleteFile(V.Local.sFile)
+F.Intrinsic.Control.EndIf
+F.Intrinsic.File.String2File(V.Local.sFile,V.Global.sUploadText)
+
+'now lets make a copy of that with date stamp and batchnum in the name
+'save it in our Global\Files\GL_LOAD folder
+'file name will be batch and timestamp value
+F.Intrinsic.String.Concat("GLDETAIL_",V.Global.sBatchNo,"_",V.Ambient.Date.FormatYYYYMMDD,".txt",V.Local.sfilename)
+F.Intrinsic.String.Concat(V.Caller.FilesDir,"\GL_Load\",V.Local.sFileName,V.Local.sCopyFile)
+'filename in this copy folder should never be the same, as the batch is increased each time through the date
+'save the necessary text to what we need to save it to.
+F.Intrinsic.File.String2File(V.Local.sCopyFile,V.Global.sUploadText)
+
+F.Intrinsic.String.Concat("Files Created and Saved:",V.Ambient.newline,V.Local.sFile,V.Ambient.NewLine,V.Local.sCopyFile,V.Local.sMessage)
+'F.Intrinsic.UI.MsgBoxExt("Files Created",V.Local.sMessage)
+F.Intrinsic.UI.Msgbox(V.Local.sMessage,"File Status")
+
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("GLFileCreate_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_SAP_GL_Upload.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.GLFileCreate.End
+
+Program.Sub.AccountLog.Start
+F.Intrinsic.Control.SetErrorHandler("AccountLog_Err")
+F.Intrinsic.Control.ClearErrors
+
+
+'sub that will write a log file to the temp directory for opening to the user
+'and letting them know that an account in the spreadsheet could not be found for
+'a GSS account in the GSS_SAP_ACCT_MAP table.>
+
+'valid args passed
+'ErrorText
+V.Local.sError.Declare(String)
+V.Local.sErrorLog.Declare(String)
+V.Local.ihndl.Declare(Long)
+V.Local.bExists.Declare(Boolean)
+
+F.Intrinsic.File.GetHandle(V.Local.ihndl)
+'error log file in the temp directory
+F.Intrinsic.String.Concat(V.System.Temp,"\GL Detail Errors.txt",V.local.sErrorLog)
+'write the file
+F.Intrinsic.File.Exists(V.Local.sErrorLog,V.Local.bExists)
+F.Intrinsic.Control.If(V.Local.bExists,=,True)
+	F.Intrinsic.File.DeleteFile(V.Local.sErrorLog)
+F.Intrinsic.Control.EndIf
+F.Intrinsic.File.String2File(V.Local.sErrorLog,V.Args.ErrorText)
+F.Intrinsic.UI.Msgbox("Error in GL Batch spreadsheet. Please review error log for details.","Batch Not Processed")
+F.Intrinsic.Task.ShellExec(V.Local.ihndl,"OPEN",V.Local.sErrorLog,"","",1)
+F.Intrinsic.Control.CallSub(Unload)
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("AccountLog_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_SAP_GL_Upload.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.AccountLog.End
+
+Program.Sub.Comments.Start
+${$0$}$GCG_GL_Dtl_Upl.$}$TRT$}$8/7/2013
+Program.Sub.Comments.End
+
